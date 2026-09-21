@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<!--
+  拉筋計時器 Stretch Timer
+  版本紀錄
+  v1.1.0 (2026-09-20) 新增：可開關的最後 3 秒「嗶、嗶、嗶」倒數提示音；提示音量調整（0–100%，含語音播報）
+  v1.0.0 (2026-09-20) 首版：Prepare / Cycle Run 兩階段循環、單擊開始/繼續、雙擊暫停、三擊重置、
+                      螢幕常亮、防雙擊放大、5 種音效(含靜音)、Cycle N start 語音播報、總時間倒數
+-->
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0E1822">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>拉筋計時器 v1.1.0</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#EEF2F5;
+    --prep-bg:#1C2B38; --prep-fill:#2F5877;
+    --run-bg:#F7E3A6;  --run-fill:#E8A317; --run-ink:#241803;
+    --done-fill:#3F7A5A;
+    --bar:#0E1822; --bar-ink:#C9D3DC;
+    --sheet:#F3F5F7; --sheet-ink:#14202B; --line:#D5DCE2; --accent:#2F5877;
+    --num:'Barlow Condensed','Arial Narrow','Roboto Condensed',sans-serif;
+    --txt:-apple-system,'PingFang TC','Noto Sans TC','Microsoft JhengHei',sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:var(--bar)}
+  body{
+    display:flex;flex-direction:column;height:100vh;height:100dvh;overflow:hidden;
+    font-family:var(--txt);
+    -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;
+    -webkit-tap-highlight-color:transparent;touch-action:manipulation;overscroll-behavior:none;
+  }
+  body[data-phase=prepare]{--bg:var(--prep-bg);--fill:var(--prep-fill);--fg:var(--paper)}
+  body[data-phase=run]    {--bg:var(--run-bg); --fill:var(--run-fill); --fg:var(--run-ink)}
+  body[data-phase=done]   {--bg:var(--prep-bg);--fill:var(--done-fill);--fg:var(--paper)}
+
+  /* ---------- 點擊區 ---------- */
+  #zone{
+    flex:1;position:relative;overflow:hidden;background:var(--bg);color:var(--fg);
+    touch-action:none;cursor:pointer;
+    padding:calc(env(safe-area-inset-top,0px) + 18px) 22px 18px;
+    display:flex;flex-direction:column;transition:background-color .3s,color .3s;
+  }
+  #fill{
+    position:absolute;inset:0;background:var(--fill);
+    transform-origin:bottom;transform:scaleY(var(--p,1));
+    transition:transform .12s linear,background-color .3s;
+  }
+  #zone::after{
+    content:"";position:absolute;inset:0;pointer-events:none;opacity:0;transition:opacity .2s;
+    background:repeating-linear-gradient(135deg,rgba(0,0,0,.16) 0 14px,transparent 14px 28px);
+  }
+  body[data-paused="1"] #zone::after{opacity:1}
+  #zone > .layer{position:relative;z-index:1}
+
+  .top{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+  #phase{font-family:var(--num);font-weight:600;font-size:34px;letter-spacing:.01em}
+  #cycle{font-size:17px;font-weight:600;opacity:.85;white-space:nowrap}
+  #paused{font-size:15px;font-weight:600;margin-top:4px;min-height:20px}
+
+  .center{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center}
+  #big{
+    font-family:var(--num);font-weight:600;font-variant-numeric:tabular-nums;
+    font-size:min(46vw,38vh);line-height:.85;letter-spacing:-.02em;
+  }
+  #big.word{font-family:var(--txt);font-size:min(22vw,16vh);font-weight:700;letter-spacing:.05em}
+  #unit{font-size:17px;opacity:.75;margin-top:8px;min-height:22px}
+
+  .bottom{display:flex;flex-direction:column;gap:10px}
+  .chips{display:flex;gap:8px;flex-wrap:wrap}
+  .chip{border:1.5px solid currentColor;border-radius:999px;padding:4px 12px;font-size:15px;opacity:.8}
+  #total{font-size:17px;font-weight:600}
+  #total b{font-family:var(--num);font-size:30px;font-weight:600;font-variant-numeric:tabular-nums;margin:0 4px}
+  #hint{font-size:14px;opacity:.7}
+
+  /* ---------- 工具列 ---------- */
+  #bar{
+    background:var(--bar);color:var(--bar-ink);
+    display:grid;grid-template-columns:1fr auto 1fr;align-items:center;
+    padding:8px 14px calc(env(safe-area-inset-bottom,0px) + 8px);min-height:62px;
+  }
+  #openSettings{
+    justify-self:start;display:flex;align-items:center;gap:8px;
+    background:none;border:1.5px solid #34485A;color:var(--paper);border-radius:12px;
+    font:600 16px var(--txt);padding:9px 14px;cursor:pointer;
+  }
+  #openSettings svg{width:20px;height:20px}
+  #ver{font-family:var(--num);font-size:17px;letter-spacing:.04em;opacity:.9}
+  #wake{justify-self:end;background:none;border:0;color:var(--bar-ink);font:14px var(--txt);cursor:pointer;display:flex;align-items:center;gap:6px}
+  #wake i{width:9px;height:9px;border-radius:50%;background:#6B7885;display:inline-block}
+  #wake[data-s=on] i{background:#5BC08A}
+  #wake[data-s=unsupported] i{background:#D9534F}
+
+  /* ---------- 設定頁 ---------- */
+  #sheet{
+    position:fixed;inset:0;z-index:10;background:var(--sheet);color:var(--sheet-ink);
+    transform:translateY(100%);transition:transform .28s ease;
+    display:flex;flex-direction:column;
+  }
+  #sheet.open{transform:none}
+  .sheet-head{
+    display:flex;justify-content:space-between;align-items:center;
+    padding:calc(env(safe-area-inset-top,0px) + 14px) 18px 12px;border-bottom:1px solid var(--line);
+  }
+  .sheet-head h2{margin:0;font-size:20px}
+  .sheet-body{flex:1;overflow-y:auto;touch-action:pan-y;padding:8px 18px 24px;-webkit-overflow-scrolling:touch}
+  .row{display:flex;justify-content:space-between;align-items:center;padding:14px 0;border-bottom:1px solid var(--line);gap:12px}
+  .row label{font-size:17px;font-weight:600}
+  .row small{display:block;font-weight:400;font-size:13px;color:#5B6875;margin-top:2px}
+  .stepper{display:flex;align-items:center;gap:6px}
+  .stepper button{
+    width:44px;height:44px;border-radius:12px;border:1.5px solid var(--line);background:#fff;
+    font:600 22px var(--txt);color:var(--sheet-ink);cursor:pointer;touch-action:manipulation;
+  }
+  .stepper input{
+    width:72px;height:44px;text-align:center;border:1.5px solid var(--line);border-radius:12px;
+    font:600 20px var(--num);color:var(--sheet-ink);background:#fff;-moz-appearance:textfield;
+  }
+  .stepper input::-webkit-outer-spin-button,.stepper input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+  #preview{padding:14px 0;font-size:16px;border-bottom:1px solid var(--line)}
+  #preview b{font-family:var(--num);font-size:24px;margin-left:6px}
+  h3{font-size:15px;color:#5B6875;margin:22px 0 6px;font-weight:600}
+  .sounds{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .sound{
+    border:1.5px solid var(--line);background:#fff;border-radius:14px;padding:14px 12px;
+    font:600 16px var(--txt);color:var(--sheet-ink);text-align:left;cursor:pointer;touch-action:manipulation;
+  }
+  .sound small{display:block;font-weight:400;font-size:13px;color:#5B6875;margin-top:3px}
+  .sound[aria-checked=true]{border-color:var(--accent);box-shadow:inset 0 0 0 1.5px var(--accent);background:#E7EEF4}
+  .range{width:160px;height:36px;accent-color:var(--accent);background:none}
+  .toggle{display:flex;justify-content:space-between;align-items:center;padding:16px 0;border-bottom:1px solid var(--line);gap:12px}
+  .toggle input{width:26px;height:26px;accent-color:var(--accent)}
+  .toggle.off{opacity:.45}
+  .sheet-foot{
+    display:grid;grid-template-columns:1fr 2fr;gap:10px;
+    padding:12px 18px calc(env(safe-area-inset-bottom,0px) + 12px);border-top:1px solid var(--line);background:var(--sheet);
+  }
+  .sheet-foot button{height:52px;border-radius:14px;font:700 17px var(--txt);cursor:pointer;touch-action:manipulation}
+  #cancel{background:#fff;border:1.5px solid var(--line);color:var(--sheet-ink)}
+  #save{background:var(--accent);border:0;color:#fff}
+  .ver-line{margin-top:26px;font-size:13px;color:#5B6875;text-align:center}
+  button:focus-visible,input:focus-visible{outline:3px solid #7FB2DA;outline-offset:2px}
+  @media (prefers-reduced-motion:reduce){#fill,#sheet{transition:none}}
+</style>
+</head>
+<body data-phase="prepare" data-paused="0">
+
+<main id="zone" aria-label="計時畫面：點一下開始或繼續，點兩下暫停，點三下重置">
+  <div id="fill"></div>
+  <div class="layer top">
+    <div id="phase">Prepare</div>
+    <div id="cycle"></div>
+  </div>
+  <div class="layer" id="paused"></div>
+  <div class="layer center">
+    <div id="big">5</div>
+    <div id="unit">秒</div>
+  </div>
+  <div class="layer bottom">
+    <div class="chips">
+      <span class="chip" id="chipPrep"></span>
+      <span class="chip" id="chipCycle"></span>
+      <span class="chip" id="chipReps"></span>
+    </div>
+    <div id="total"></div>
+    <div id="hint"></div>
+  </div>
+</main>
+
+<nav id="bar">
+  <button id="openSettings" type="button" aria-label="開啟設定">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    設定
+  </button>
+  <div id="ver"></div>
+  <button id="wake" type="button" data-s="off"><i></i><span>未常亮</span></button>
+</nav>
+
+<section id="sheet" aria-hidden="true" aria-label="設定">
+  <div class="sheet-head"><h2>設定</h2></div>
+  <div class="sheet-body">
+    <div class="row">
+      <label for="in-prep">Prepare<small>準備秒數</small></label>
+      <div class="stepper" data-key="prep"><button type="button" data-d="-1" aria-label="減少">−</button><input id="in-prep" type="number" inputmode="numeric"><button type="button" data-d="1" aria-label="增加">+</button></div>
+    </div>
+    <div class="row">
+      <label for="in-cycle">Cycle Run<small>拉筋秒數</small></label>
+      <div class="stepper" data-key="cycle"><button type="button" data-d="-1" aria-label="減少">−</button><input id="in-cycle" type="number" inputmode="numeric"><button type="button" data-d="1" aria-label="增加">+</button></div>
+    </div>
+    <div class="row">
+      <label for="in-reps">重複次數<small>設 0 為無限循環</small></label>
+      <div class="stepper" data-key="reps"><button type="button" data-d="-1" aria-label="減少">−</button><input id="in-reps" type="number" inputmode="numeric"><button type="button" data-d="1" aria-label="增加">+</button></div>
+    </div>
+    <div id="preview"></div>
+
+    <h3>提示音（點選可試聽）</h3>
+    <div class="sounds" id="sounds" role="radiogroup"></div>
+
+    <div class="row" id="volRow">
+      <label for="vol">提示音量<small><span id="volVal">80</span>%</small></label>
+      <input type="range" class="range" id="vol" min="0" max="100" step="5">
+    </div>
+
+    <label class="toggle" id="countRow">
+      <span><b>倒數提示音</b><br><small style="color:#5B6875">每個階段最後 3 秒嗶、嗶、嗶</small></span>
+      <input type="checkbox" id="countdown">
+    </label>
+
+    <label class="toggle" id="voiceRow">
+      <span><b>語音播報</b><br><small style="color:#5B6875">每輪開始時唸出「Cycle N start」</small></span>
+      <input type="checkbox" id="voice">
+    </label>
+
+    <div class="ver-line" id="verLine"></div>
+  </div>
+  <div class="sheet-foot">
+    <button type="button" id="cancel">取消</button>
+    <button type="button" id="save">儲存並重置計時</button>
+  </div>
+</section>
+
+<script>
+(() => {
+  'use strict';
+  const APP_VERSION = '1.1.0';
+  const STORE_KEY = 'stretchTimer.settings.v1';
+  const DEFAULTS = { prep: 5, cycle: 30, reps: 10, sound: 'beep', voice: true, countdown: true, volume: 0.8 };
+  const LIMITS = { prep: [1, 600], cycle: [1, 3600], reps: [0, 99] };
+  const SOUNDS = [
+    { id: 'beep',    name: '嗶聲',   desc: '清楚的電子嗶' },
+    { id: 'bell',    name: '鈴聲',   desc: '柔和的鐘聲' },
+    { id: 'wood',    name: '木魚',   desc: '短促的敲擊' },
+    { id: 'digital', name: '電子錶', desc: '方波提示音' },
+    { id: 'mute',    name: '靜音',   desc: '不發出任何聲音' },
+  ];
+  const TAP_WINDOW = 350; // ms，判斷單擊/雙擊/三擊的間隔
+
+  const $ = id => document.getElementById(id);
+  const body = document.body;
+
+  // ---------- 設定 ----------
+  function loadSettings() {
+    try {
+      const s = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
+      if (s && typeof s === 'object') return sanitize({ ...DEFAULTS, ...s });
+    } catch (e) {}
+    return { ...DEFAULTS };
+  }
+  function sanitize(s) {
+    for (const k of Object.keys(LIMITS)) {
+      const [lo, hi] = LIMITS[k];
+      let v = parseInt(s[k], 10);
+      if (isNaN(v)) v = DEFAULTS[k];
+      s[k] = Math.min(hi, Math.max(lo, v));
+    }
+    if (!SOUNDS.some(x => x.id === s.sound)) s.sound = DEFAULTS.sound;
+    s.voice = !!s.voice;
+    s.countdown = !!s.countdown;
+    let v = parseFloat(s.volume);
+    s.volume = isNaN(v) ? DEFAULTS.volume : Math.min(1, Math.max(0, v));
+    return s;
+  }
+  function saveSettings() {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(S)); } catch (e) {}
+  }
+  let S = loadSettings();
+
+  // ---------- 狀態 ----------
+  // mode: idle | active | done ; phase: prepare | run
+  let st;
+  function reset() {
+    st = { mode: 'idle', phase: 'prepare', cycle: 1, phaseEnd: 0, remain: 0, paused: false };
+    stopSpeech();
+    render();
+  }
+  function start() {
+    unlockAudio();
+    st = { mode: 'active', phase: 'prepare', cycle: 1,
+           phaseEnd: performance.now() + S.prep * 1000, remain: 0, paused: false };
+    render();
+  }
+  function pause() {
+    if (st.mode !== 'active' || st.paused) return;
+    st.remain = Math.max(0, st.phaseEnd - performance.now());
+    st.paused = true;
+    stopSpeech();
+    render();
+  }
+  function resume() {
+    if (st.mode !== 'active' || !st.paused) return;
+    unlockAudio();
+    st.phaseEnd = performance.now() + st.remain;
+    st.paused = false;
+    render();
+  }
+  function advance(now) {
+    const late = now - st.phaseEnd;         // 若背景延遲太久，不補放舊的聲音
+    const audible = late < 1500;
+    if (st.phase === 'prepare') {
+      st.phase = 'run';
+      st.phaseEnd += S.cycle * 1000;
+      if (audible) { playSfx('start'); announce(st.cycle); }
+    } else {
+      if (audible) playSfx('end');
+      if (S.reps > 0 && st.cycle >= S.reps) { st.mode = 'done'; return; }
+      st.cycle += 1;
+      st.phase = 'prepare';
+      st.phaseEnd += S.prep * 1000;
+    }
+  }
+  let lastTickKey = '';
+  function tick() {
+    if (st.mode === 'active' && !st.paused) {
+      const now = performance.now();
+      let guard = 0;
+      while (st.mode === 'active' && now >= st.phaseEnd && guard++ < 500) advance(now);
+      // 每個階段最後 3 秒的倒數提示音
+      if (st.mode === 'active' && S.countdown && S.sound !== 'mute') {
+        const sec = Math.ceil((st.phaseEnd - now) / 1000);
+        const key = st.phaseEnd.toFixed(0) + ':' + sec;
+        if (sec >= 1 && sec <= 3 && key !== lastTickKey) { lastTickKey = key; playSfx('tick'); }
+      }
+    }
+    render();
+  }
+
+  // ---------- 畫面 ----------
+  const pad = n => String(n).padStart(2, '0');
+  function clock(sec) {
+    sec = Math.max(0, Math.ceil(sec));
+    const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+    return h ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+  }
+  function render() {
+    const now = performance.now();
+    const P = S.prep * 1000, C = S.cycle * 1000, R = S.reps;
+    const total = R ? (P + C) * R : null;
+    let phase, rem, dur, totalRem;
+
+    if (st.mode === 'idle') {
+      phase = 'prepare'; rem = P; dur = P; totalRem = total;
+    } else if (st.mode === 'done') {
+      phase = 'done'; rem = 0; dur = 1; totalRem = 0;
+    } else {
+      phase = st.phase;
+      rem = st.paused ? st.remain : Math.max(0, st.phaseEnd - now);
+      dur = phase === 'prepare' ? P : C;
+      totalRem = R ? rem + (phase === 'prepare' ? C : 0) + (R - st.cycle) * (P + C) : null;
+    }
+
+    body.dataset.phase = phase;
+    body.dataset.paused = st.mode === 'active' && st.paused ? '1' : '0';
+    $('fill').style.setProperty('--p', st.mode === 'done' ? 1 : Math.max(0, Math.min(1, rem / dur)));
+
+    $('phase').textContent = phase === 'run' ? 'Cycle Run' : phase === 'done' ? 'Finished' : 'Prepare';
+
+    const big = $('big');
+    if (st.mode === 'done') {
+      big.textContent = '完成'; big.classList.add('word'); $('unit').textContent = '';
+    } else {
+      const s = Math.ceil(rem / 1000);
+      big.classList.remove('word');
+      big.textContent = s >= 60 ? clock(s) : String(s);
+      $('unit').textContent = s >= 60 ? '分：秒' : '秒';
+    }
+
+    if (st.mode === 'idle') $('cycle').textContent = R ? `共 ${R} 輪` : '無限循環';
+    else if (st.mode === 'done') $('cycle').textContent = `${R} 輪全部完成`;
+    else $('cycle').textContent = R ? `第 ${st.cycle} / ${R} 輪` : `第 ${st.cycle} 輪`;
+
+    $('paused').textContent = body.dataset.paused === '1' ? '已暫停' : '';
+
+    $('chipPrep').textContent = `Prepare ${S.prep} 秒`;
+    $('chipCycle').textContent = `Cycle ${S.cycle} 秒`;
+    $('chipReps').textContent = R ? `× ${R} 輪` : '無限循環';
+
+    if (total === null) {
+      $('total').innerHTML = '總時間 <b>∞</b>';
+    } else if (st.mode === 'idle') {
+      $('total').innerHTML = `總時間 <b>${clock(total / 1000)}</b>`;
+    } else {
+      $('total').innerHTML = `總時間 剩餘 <b>${clock(totalRem / 1000)}</b> / ${clock(total / 1000)}`;
+    }
+
+    $('hint').textContent =
+      st.mode === 'idle' ? '點一下畫面開始' :
+      st.mode === 'done' ? '點一下重新開始' :
+      st.paused ? '點一下繼續　點三下重置' : '點兩下暫停　點三下重置';
+  }
+
+  // ---------- 音效（Web Audio 合成，不需外部檔案）----------
+  let ctx = null, master = null;
+  function unlockAudio() {
+    try {
+      if (!ctx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        ctx = new AC();
+        master = ctx.createGain(); master.gain.value = S.volume * 0.9; master.connect(ctx.destination);
+      }
+      if (ctx.state === 'suspended') ctx.resume();
+    } catch (e) {}
+    unlockSpeech();
+  }
+  function setMaster(v) { if (master) master.gain.value = v * 0.9; }
+  function tone(type, freq, t0, dur, vol, decay) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.value = freq;
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(vol, t0 + 0.006);
+    if (!decay) g.gain.setValueAtTime(vol, t0 + Math.max(0.01, dur - 0.04));
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(g).connect(master);
+    o.start(t0); o.stop(t0 + dur + 0.05);
+  }
+  const PROFILES = {
+    beep:    { short: t => tone('sine', 880, t, 0.16, 0.6),
+               long:  t => tone('sine', 660, t, 1.1, 0.6),
+               tick:  t => tone('sine', 740, t, 0.08, 0.3) },
+    bell:    { short: t => { tone('sine', 1046, t, 0.5, 0.5, 1); tone('sine', 2093, t, 0.35, 0.15, 1); },
+               long:  t => { tone('sine', 784, t, 2.2, 0.55, 1); tone('sine', 1568, t, 1.4, 0.18, 1); tone('sine', 2360, t, 0.8, 0.08, 1); },
+               tick:  t => tone('sine', 1046, t, 0.14, 0.22, 1) },
+    wood:    { short: t => { tone('triangle', 1500, t, 0.08, 0.7, 1); tone('sine', 800, t, 0.06, 0.4, 1); },
+               long:  t => { tone('triangle', 520, t, 1.0, 0.7, 1); tone('sine', 260, t, 1.0, 0.4, 1); },
+               tick:  t => tone('triangle', 1100, t, 0.06, 0.35, 1) },
+    digital: { short: t => tone('square', 1320, t, 0.12, 0.16),
+               long:  t => tone('square', 990, t, 0.9, 0.16),
+               tick:  t => tone('square', 1100, t, 0.07, 0.08) },
+  };
+  // kind: 'start' = 兩短音（進入 Cycle Run）；'end' = 一長音（Cycle Run 結束）；'tick' = 最後 3 秒倒數
+  function playSfx(kind, soundId) {
+    const id = soundId || S.sound;
+    if (id === 'mute' || !PROFILES[id]) return;
+    unlockAudio();
+    if (!ctx) return;
+    const t = ctx.currentTime + 0.03, p = PROFILES[id];
+    if (kind === 'start') { p.short(t); p.short(t + 0.3); }
+    else if (kind === 'tick') p.tick(t);
+    else if (kind === 'one') p.short(t);
+    else p.long(t);
+  }
+
+  // ---------- 語音播報 ----------
+  let speechUnlocked = false, enVoice = null;
+  function pickVoice() {
+    if (!('speechSynthesis' in window)) return;
+    const vs = speechSynthesis.getVoices();
+    enVoice = vs.find(v => /^en[-_]US/i.test(v.lang)) || vs.find(v => /^en/i.test(v.lang)) || null;
+  }
+  if ('speechSynthesis' in window) {
+    pickVoice();
+    speechSynthesis.addEventListener && speechSynthesis.addEventListener('voiceschanged', pickVoice);
+  }
+  function unlockSpeech() {
+    if (speechUnlocked || !('speechSynthesis' in window)) return;
+    try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); speechUnlocked = true; } catch (e) {}
+  }
+  function stopSpeech() { try { if ('speechSynthesis' in window) speechSynthesis.cancel(); } catch (e) {} }
+  function announce(n) {
+    if (S.sound === 'mute' || !S.voice || !('speechSynthesis' in window)) return;
+    setTimeout(() => {
+      if (st.mode !== 'active' || st.paused) return;
+      try {
+        speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(`Cycle ${n} start`);
+        u.lang = 'en-US'; u.rate = 1; u.volume = S.volume;
+        if (enVoice) u.voice = enVoice;
+        speechSynthesis.speak(u);
+      } catch (e) {}
+    }, 700); // 等兩短音播完再唸
+  }
+
+  // ---------- 螢幕常亮 ----------
+  let wakeLock = null;
+  function setWake(s) {
+    const w = $('wake'); w.dataset.s = s;
+    w.querySelector('span').textContent = s === 'on' ? '螢幕常亮' : s === 'unsupported' ? '不支援常亮' : '未常亮';
+  }
+  async function requestWake() {
+    if (!('wakeLock' in navigator)) { setWake('unsupported'); return; }
+    if (wakeLock) return;
+    try {
+      wakeLock = await navigator.wakeLock.request('screen');
+      setWake('on');
+      wakeLock.addEventListener('release', () => { wakeLock = null; setWake('off'); });
+    } catch (e) { setWake('off'); }
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') { requestWake(); tick(); }
+  });
+  $('wake').addEventListener('click', requestWake);
+
+  // ---------- 點擊判斷：1 下開始/繼續、2 下暫停、3 下重置 ----------
+  const zone = $('zone');
+  let taps = 0, tapTimer = null;
+  function resolveTaps() {
+    const n = taps; taps = 0; tapTimer = null;
+    if (n >= 3) { reset(); return; }
+    if (n === 2) { if (st.mode === 'active' && !st.paused) pause(); return; }
+    // n === 1
+    if (st.mode === 'idle' || st.mode === 'done') start();
+    else if (st.paused) resume();
+  }
+  zone.addEventListener('touchstart', e => e.preventDefault(), { passive: false }); // 阻止雙擊放大與長按選單
+  zone.addEventListener('pointerdown', e => {
+    if (e.button && e.button !== 0) return;
+    unlockAudio();
+    requestWake();
+    taps += 1;
+    clearTimeout(tapTimer);
+    if (taps >= 3) resolveTaps();
+    else tapTimer = setTimeout(resolveTaps, TAP_WINDOW);
+  });
+  // 全頁再保險：防止 iOS 雙擊/捏合縮放
+  document.addEventListener('dblclick', e => e.preventDefault(), { passive: false });
+  document.addEventListener('gesturestart', e => e.preventDefault(), { passive: false });
+  let lastTouchEnd = 0;
+  document.addEventListener('touchend', e => {
+    const now = Date.now();
+    if (now - lastTouchEnd < 350 && !e.target.closest('input')) e.preventDefault();
+    lastTouchEnd = now;
+  }, { passive: false });
+
+  // ---------- 設定頁 ----------
+  const sheet = $('sheet');
+  let draft = null, wasRunning = false;
+  function openSettings() {
+    wasRunning = st.mode === 'active' && !st.paused;
+    if (wasRunning) pause();
+    draft = { ...S };
+    fillSheet();
+    sheet.classList.add('open'); sheet.setAttribute('aria-hidden', 'false');
+  }
+  function closeSettings() {
+    sheet.classList.remove('open'); sheet.setAttribute('aria-hidden', 'true');
+    if (document.activeElement) document.activeElement.blur();
+  }
+  function fillSheet() {
+    for (const k of Object.keys(LIMITS)) $('in-' + k).value = draft[k];
+    $('sounds').innerHTML = SOUNDS.map(s =>
+      `<button type="button" class="sound" role="radio" data-id="${s.id}" aria-checked="${s.id === draft.sound}">${s.name}<small>${s.desc}</small></button>`
+    ).join('');
+    $('voice').checked = draft.voice;
+    $('countdown').checked = draft.countdown;
+    $('vol').value = Math.round(draft.volume * 100);
+    $('volVal').textContent = Math.round(draft.volume * 100);
+    updatePreview();
+  }
+  function updatePreview() {
+    const t = draft.reps ? clock((draft.prep + draft.cycle) * draft.reps) : null;
+    $('preview').innerHTML = t
+      ? `總時間 <b>${t}</b>（(${draft.prep} + ${draft.cycle}) 秒 × ${draft.reps} 輪）`
+      : '總時間 <b>∞</b>（無限循環）';
+    const mute = draft.sound === 'mute';
+    $('voiceRow').classList.toggle('off', mute);
+    $('voice').disabled = mute;
+    $('countRow').classList.toggle('off', mute);
+    $('countdown').disabled = mute;
+    $('volRow').style.opacity = mute ? .45 : 1;
+    $('vol').disabled = mute;
+  }
+  function setField(k, v) {
+    const [lo, hi] = LIMITS[k];
+    v = parseInt(v, 10); if (isNaN(v)) v = draft[k];
+    draft[k] = Math.min(hi, Math.max(lo, v));
+    $('in-' + k).value = draft[k];
+    updatePreview();
+  }
+  document.querySelectorAll('.stepper').forEach(sp => {
+    const k = sp.dataset.key;
+    sp.querySelector('input').addEventListener('change', e => setField(k, e.target.value));
+    sp.querySelector('input').addEventListener('input', e => {
+      const v = parseInt(e.target.value, 10);
+      if (!isNaN(v)) { draft[k] = Math.min(LIMITS[k][1], Math.max(LIMITS[k][0], v)); updatePreview(); }
+    });
+    sp.querySelectorAll('button').forEach(b => {
+      let hold = null, rep = null;
+      const step = () => setField(k, draft[k] + Number(b.dataset.d));
+      const stop = () => { clearTimeout(hold); clearInterval(rep); };
+      b.addEventListener('pointerdown', e => {
+        e.preventDefault(); step();
+        hold = setTimeout(() => { rep = setInterval(step, 70); }, 400); // 長按連續加減
+      });
+      ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => b.addEventListener(ev, stop));
+    });
+  });
+  $('sounds').addEventListener('click', e => {
+    const b = e.target.closest('.sound'); if (!b) return;
+    draft.sound = b.dataset.id;
+    $('sounds').querySelectorAll('.sound').forEach(x => x.setAttribute('aria-checked', x === b));
+    updatePreview();
+    playSfx('start', draft.sound); // 試聽
+  });
+  $('voice').addEventListener('change', e => { draft.voice = e.target.checked; });
+  $('countdown').addEventListener('change', e => {
+    draft.countdown = e.target.checked;
+    if (e.target.checked) playSfx('tick', draft.sound); // 試聽
+  });
+  $('vol').addEventListener('input', e => {
+    draft.volume = Number(e.target.value) / 100;
+    $('volVal').textContent = e.target.value;
+    setMaster(draft.volume);
+  });
+  $('vol').addEventListener('change', () => { unlockAudio(); setMaster(draft.volume); playSfx('one', draft.sound); });
+  $('openSettings').addEventListener('click', openSettings);
+  $('cancel').addEventListener('click', () => { setMaster(S.volume); closeSettings(); if (wasRunning) resume(); });
+  $('save').addEventListener('click', () => {
+    for (const k of Object.keys(LIMITS)) setField(k, $('in-' + k).value);
+    S = sanitize({ ...draft });
+    setMaster(S.volume);
+    saveSettings();
+    closeSettings();
+    reset();
+  });
+
+  // ---------- 啟動 ----------
+  $('ver').textContent = 'v' + APP_VERSION;
+  $('verLine').textContent = '拉筋計時器 版本 v' + APP_VERSION;
+  reset();
+  requestWake();
+  setInterval(tick, 100);
+})();
+</script>
+</body>
+</html>
