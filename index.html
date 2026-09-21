@@ -2,6 +2,9 @@
 <!--
   拉筋計時器 Stretch Timer
   版本紀錄
+  v1.3.2 (2026-09-21) 修正：提示音改為等 AudioContext resume 完成後才播，避免誤用備援音檔而壓掉語音；
+                      語音報數的備援嗶聲改為確認語音真的沒啟動才觸發（2.2 秒且未在朗讀中）；
+                      常亮改為背景持續重試 Wake Lock，取得後自動由橘點轉綠點，不必手動點狀態列
   v1.3.1 (2026-09-21) 修正：提示音消失的問題。移除會搶走 iOS 音訊工作階段的 AudioSession 設定，
                       語音解鎖/播報結束後自動喚醒 AudioContext，Wake Lock 生效時停掉備援影片，
                       並在 AudioContext 無法運作時自動改用 WAV 音檔播放提示音；設定頁新增試聽提示音與音訊狀態
@@ -22,7 +25,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>拉筋計時器 v1.3.1</title>
+<title>拉筋計時器 v1.3.2</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="icon" href="icon-192.png">
@@ -254,7 +257,7 @@
 <script>
 (() => {
   'use strict';
-  const APP_VERSION = '1.3.1';
+  const APP_VERSION = '1.3.2';
   const STORE_KEY = 'stretchTimer.settings.v1';
   const DEFAULTS = { prep: 5, cycle: 30, reps: 10, sound: 'beep', voice: true, countdown: true, volume: 0.8 };
   const LIMITS = { prep: [1, 600], cycle: [1, 3600], reps: [0, 99] };
@@ -504,13 +507,21 @@
     const id = soundId || S.sound;
     if (id === 'mute' || !PROFILES[id]) return;
     unlockAudio();
-    resumeAudio();
-    if (!ctx || ctx.state !== 'running') { playWav(kind); return; } // AudioContext 被系統中斷時的備援
-    const t = ctx.currentTime + 0.03, p = PROFILES[id];
-    if (kind === 'start') { p.short(t); p.short(t + 0.3); }
-    else if (kind === 'tick') p.tick(t);
-    else if (kind === 'one') p.short(t);
-    else p.long(t);
+    if (!ctx) { playWav(kind); return; }
+    const p = PROFILES[id];
+    const go = () => {
+      const t = ctx.currentTime + 0.03;
+      if (kind === 'start') { p.short(t); p.short(t + 0.3); }
+      else if (kind === 'tick') p.tick(t);
+      else if (kind === 'one') p.short(t);
+      else p.long(t);
+    };
+    if (ctx.state === 'running') { go(); return; }
+    // 先等 resume 完成再播，不要因為狀態一時不是 running 就改用備援音檔
+    try {
+      ctx.resume().then(() => { if (ctx.state === 'running') go(); else playWav(kind); })
+                  .catch(() => playWav(kind));
+    } catch (e) { playWav(kind); }
   }
 
   // ---------- 語音播報 ----------
@@ -557,9 +568,12 @@
       if (st.mode !== 'active' || st.paused) return;
       if (!('speechSynthesis' in window)) { beepCount(n); return; }
       let ok = false;
-      speak(`Cycle ${n} start`, r => { if (r === 'ok') ok = true; else beepCount(n); });
-      // 語音沒反應（iOS 主畫面模式常見）時，改用嗶聲報數
-      setTimeout(() => { if (!ok && st.mode === 'active' && !st.paused) beepCount(n); }, 1500);
+      speak(`Cycle ${n} start`, r => { if (r === 'ok') ok = true; });
+      // 只有確定語音完全沒啟動時，才用嗶聲報數頂替
+      setTimeout(() => {
+        const busy = speechSynthesis.speaking || speechSynthesis.pending;
+        if (!ok && !busy && st.mode === 'active' && !st.paused) beepCount(n);
+      }, 2200);
     }, 550); // 等兩短音播完再唸
   }
   // 以 n 聲短嗶代表第 n 輪，超過 12 輪則不報數
@@ -580,7 +594,7 @@
   // ---------- 螢幕常亮 ----------
   // 先用 Wake Lock API；不支援或被拒絕時，退回播放 1px 無聲循環影片（NoSleep 作法）。
   const SILENT_MP4 = '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PTQwIHJjPWNyZiBtYnRyZWU9MSBjcmY9MjMuMCBxY29tcD0wLjYwIHFwbWluPTAgcXBtYXg9NjkgcXBzdGVwPTQgaXBfcmF0aW89MS40MCBhcT0xOjEuMDAAgAAAABZliIQP8mKAAMPsnJyddddddddddddeARggBwEYIAcBGCAHARggBwEYIAcAAAAGQZo4H+EYARggBwEYIAcBGCAHARggBwAAAAZBmlQH+EYBGCAHARggBwEYIAcBGCAHAAAABkGaYD/CMAEYIAcBGCAHARggBwEYIAcBGCAHAAAABkGagD/CMAEYIAcBGCAHARggBwEYIAcAAAAGQZqgP8IwARggBwEYIAcBGCAHARggBwAAAAZBmsA/wjABGCAHARggBwEYIAcBGCAHARggBwAAAAZBmuA/wjABGCAHARggBwEYIAcBGCAHAAAABkGbAD/CMAEYIAcBGCAHARggBwEYIAcAAAAGQZsgP8IwARggBwEYIAcBGCAHARggBwEYIAcAAAAGQZtAP8IwARggBwEYIAcBGCAHARggBwAAAAZBm2A/wjABGCAHARggBwEYIAcBGCAHAAAABkGbgD/CMAEYIAcBGCAHARggBwEYIAcAAAAGQZugP8IwARggBwEYIAcBGCAHARggBwEYIAcAAAAGQZvAP8IwARggBwEYIAcBGCAHARggBwAAAAZBm+A/wjABGCAHARggBwEYIAcBGCAHAAAABkGaAD/CMAEYIAcBGCAHARggBwEYIAcBGCAHAAAABkGaID/CMAEYIAcBGCAHARggBwEYIAcAAAAGQZpAO8IwARggBwEYIAcBGCAHARggBwAAAAZBmmA3wjABGCAHARggBwEYIAcBGCAH';
-  let wakeLock = null, video = null;
+  let wakeLock = null, video = null, wakeRequesting = false;
   function setWake(s) {
     const w = $('wake'); w.dataset.s = s;
     w.querySelector('span').textContent =
@@ -594,7 +608,7 @@
         video.muted = true; video.defaultMuted = true; video.loop = true; video.volume = 0;
         video.style.cssText = 'position:fixed;left:0;bottom:0;width:1px;height:1px;opacity:.01;pointer-events:none';
         video.src = 'data:video/mp4;base64,' + SILENT_MP4;
-        video.addEventListener('playing', () => { if (!wakeLock) setWake('video'); });
+        video.addEventListener('playing', () => { if (!wakeLock && !wakeRequesting) setWake('video'); });
         document.body.appendChild(video);
       }
       const p = video.play();
@@ -604,20 +618,30 @@
   function stopSilentVideo() {
     try { if (video && !video.paused) { video.pause(); video.currentTime = 0; } } catch (e) {}
   }
-  async function requestWake() {
+  async function requestWake(useFallback) {
     if (wakeLock) { setWake('on'); return; }
-    if ('wakeLock' in navigator) {
+    if ('wakeLock' in navigator && document.visibilityState === 'visible') {
+      wakeRequesting = true;
       try {
         wakeLock = await navigator.wakeLock.request('screen');
+        wakeRequesting = false;
         stopSilentVideo();   // 備援影片會干擾 iOS 音訊，Wake Lock 生效時就停掉
         setWake('on');
-        wakeLock.addEventListener('release', () => { wakeLock = null; playSilentVideo(); });
+        wakeLock.addEventListener('release', () => { wakeLock = null; setWake('off'); requestWake(true); });
         return;
-      } catch (e) { /* 落到影片備援 */ }
+      } catch (e) { wakeRequesting = false; /* 落到影片備援 */ }
     }
+    if (useFallback === false) { setWake(video && !video.paused ? 'video' : 'off'); return; }
     playSilentVideo();
     if (!video || video.paused) setWake(('wakeLock' in navigator) ? 'off' : 'unsupported');
   }
+  // 影片備援期間持續重試 Wake Lock，成功後自動轉為綠點，不需手動點狀態列
+  setInterval(() => {
+    if (!wakeLock && !wakeRequesting && 'wakeLock' in navigator && document.visibilityState === 'visible'
+        && $('wake').dataset.s !== 'unsupported') requestWake(false);
+  }, 4000);
+  // 畫面任何位置的觸碰都嘗試取得 Wake Lock（含工具列與設定頁）
+  document.addEventListener('pointerdown', () => { if (!wakeLock) requestWake(); }, true);
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') { requestWake(); resumeAudio(); tick(); }
   });
