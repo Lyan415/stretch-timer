@@ -2,6 +2,11 @@
 <!--
   拉筋計時器 Stretch Timer
   版本紀錄
+  v1.3.0 (2026-09-21) 新增：iOS 主畫面模式支援（manifest、icon、standalone 顯示）；
+                      語音失敗時自動改用嗶聲計數輪數；設定頁新增強制重新載入最新版本；
+                      嘗試以 AudioSession playback 讓靜音開關下仍可發聲（僅部分 Safari 版本支援）
+  v1.2.0 (2026-09-21) 修正：語音播報在 iOS/Android 未解鎖而不發聲的問題（改用有效的解鎖語句並加入試聽與狀態顯示）；
+                      螢幕常亮改為 Wake Lock 失敗時自動啟用無聲影片備援（NoSleep 作法），狀態列可顯示採用哪一種
   v1.1.0 (2026-09-20) 新增：可開關的最後 3 秒「嗶、嗶、嗶」倒數提示音；提示音量調整（0–100%，含語音播報）
   v1.0.0 (2026-09-20) 首版：Prepare / Cycle Run 兩階段循環、單擊開始/繼續、雙擊暫停、三擊重置、
                       螢幕常亮、防雙擊放大、5 種音效(含靜音)、Cycle N start 語音播報、總時間倒數
@@ -14,7 +19,10 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>拉筋計時器 v1.1.0</title>
+<title>拉筋計時器 v1.3.0</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" href="icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600&display=swap" rel="stylesheet">
@@ -96,7 +104,11 @@
   #wake{justify-self:end;background:none;border:0;color:var(--bar-ink);font:14px var(--txt);cursor:pointer;display:flex;align-items:center;gap:6px}
   #wake i{width:9px;height:9px;border-radius:50%;background:#6B7885;display:inline-block}
   #wake[data-s=on] i{background:#5BC08A}
+  #wake[data-s=video] i{background:#E8A317}
   #wake[data-s=unsupported] i{background:#D9534F}
+  .mini{margin-top:8px;border:1.5px solid var(--line);background:#fff;border-radius:10px;
+        font:600 14px var(--txt);color:var(--sheet-ink);padding:7px 12px;cursor:pointer;touch-action:manipulation}
+  .mini-msg{display:inline-block;margin-left:8px;font-size:13px;color:#5B6875}
 
   /* ---------- 設定頁 ---------- */
   #sheet{
@@ -213,12 +225,20 @@
       <input type="checkbox" id="countdown">
     </label>
 
-    <label class="toggle" id="voiceRow">
-      <span><b>語音播報</b><br><small style="color:#5B6875">每輪開始時唸出「Cycle N start」</small></span>
-      <input type="checkbox" id="voice">
-    </label>
+    <div class="toggle" id="voiceRow">
+      <span><b>語音播報</b><br><small style="color:#5B6875">每輪開始時唸出「Cycle N start」</small><br>
+        <button type="button" class="mini" id="testVoice">試聽語音</button><span class="mini-msg" id="voiceMsg"></span>
+      </span>
+      <input type="checkbox" id="voice" aria-label="語音播報">
+    </div>
+
+    <div class="row" style="border-bottom:none">
+      <label>版本更新<small>從 GitHub 重新抓取最新檔案</small></label>
+      <button type="button" class="mini" id="reload" style="margin:0">強制重新載入</button>
+    </div>
 
     <div class="ver-line" id="verLine"></div>
+    <div class="ver-line" id="envLine" style="margin-top:4px"></div>
   </div>
   <div class="sheet-foot">
     <button type="button" id="cancel">取消</button>
@@ -229,7 +249,7 @@
 <script>
 (() => {
   'use strict';
-  const APP_VERSION = '1.1.0';
+  const APP_VERSION = '1.3.0';
   const STORE_KEY = 'stretchTimer.settings.v1';
   const DEFAULTS = { prep: 5, cycle: 30, reps: 10, sound: 'beep', voice: true, countdown: true, volume: 0.8 };
   const LIMITS = { prep: [1, 600], cycle: [1, 3600], reps: [0, 99] };
@@ -406,6 +426,8 @@
         master = ctx.createGain(); master.gain.value = S.volume * 0.9; master.connect(ctx.destination);
       }
       if (ctx.state === 'suspended') ctx.resume();
+      // Safari 部分版本支援：宣告為 playback，讓 iPhone 側邊靜音開關打開時仍能發聲
+      try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
     } catch (e) {}
     unlockSpeech();
   }
@@ -460,37 +482,88 @@
   }
   function unlockSpeech() {
     if (speechUnlocked || !('speechSynthesis' in window)) return;
-    try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); speechUnlocked = true; } catch (e) {}
+    try {
+      // iOS / Android 需要在使用者手勢中先播一次「有內容」的語句才會解鎖，
+      // 空字串或純空白會被忽略，所以這裡用實際文字＋音量 0。
+      const u = new SpeechSynthesisUtterance('go');
+      u.volume = 0; u.rate = 2; u.lang = 'en-US';
+      if (enVoice) u.voice = enVoice;
+      u.onstart = () => { speechUnlocked = true; };
+      u.onend = () => { speechUnlocked = true; };
+      speechSynthesis.speak(u);
+    } catch (e) {}
   }
   function stopSpeech() { try { if ('speechSynthesis' in window) speechSynthesis.cancel(); } catch (e) {} }
+  function speak(text, onResult) {
+    if (!('speechSynthesis' in window)) { onResult && onResult('unsupported'); return; }
+    try {
+      if (speechSynthesis.speaking || speechSynthesis.pending) speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = 'en-US'; u.rate = 1; u.volume = S.volume;
+      if (enVoice) u.voice = enVoice;
+      u.onstart = () => { speechUnlocked = true; onResult && onResult('ok'); };
+      u.onerror = e => onResult && onResult('error:' + ((e && e.error) || ''));
+      speechSynthesis.speak(u);
+    } catch (e) { onResult && onResult('error'); }
+  }
   function announce(n) {
-    if (S.sound === 'mute' || !S.voice || !('speechSynthesis' in window)) return;
+    if (S.sound === 'mute' || !S.voice) return;
     setTimeout(() => {
       if (st.mode !== 'active' || st.paused) return;
-      try {
-        speechSynthesis.cancel();
-        const u = new SpeechSynthesisUtterance(`Cycle ${n} start`);
-        u.lang = 'en-US'; u.rate = 1; u.volume = S.volume;
-        if (enVoice) u.voice = enVoice;
-        speechSynthesis.speak(u);
-      } catch (e) {}
-    }, 700); // 等兩短音播完再唸
+      if (!('speechSynthesis' in window)) { beepCount(n); return; }
+      let ok = false;
+      speak(`Cycle ${n} start`, r => { if (r === 'ok') ok = true; else beepCount(n); });
+      // 語音沒反應（iOS 主畫面模式常見）時，改用嗶聲報數
+      setTimeout(() => { if (!ok && st.mode === 'active' && !st.paused) beepCount(n); }, 1500);
+    }, 550); // 等兩短音播完再唸
+  }
+  // 以 n 聲短嗶代表第 n 輪，超過 12 輪則不報數
+  let beepedFor = -1;
+  function beepCount(n) {
+    if (beepedFor === n || n > 12 || S.sound === 'mute') return;
+    beepedFor = n;
+    unlockAudio();
+    if (!ctx || !PROFILES[S.sound]) return;
+    const t0 = ctx.currentTime + 0.05;
+    for (let i = 0; i < n; i++) PROFILES[S.sound].tick(t0 + i * 0.26);
   }
 
   // ---------- 螢幕常亮 ----------
-  let wakeLock = null;
+  // 先用 Wake Lock API；不支援或被拒絕時，退回播放 1px 無聲循環影片（NoSleep 作法）。
+  const SILENT_MP4 = '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PTQwIHJjPWNyZiBtYnRyZWU9MSBjcmY9MjMuMCBxY29tcD0wLjYwIHFwbWluPTAgcXBtYXg9NjkgcXBzdGVwPTQgaXBfcmF0aW89MS40MCBhcT0xOjEuMDAAgAAAABZliIQP8mKAAMPsnJyddddddddddddeARggBwEYIAcBGCAHARggBwEYIAcAAAAGQZo4H+EYARggBwEYIAcBGCAHARggBwAAAAZBmlQH+EYBGCAHARggBwEYIAcBGCAHAAAABkGaYD/CMAEYIAcBGCAHARggBwEYIAcBGCAHAAAABkGagD/CMAEYIAcBGCAHARggBwEYIAcAAAAGQZqgP8IwARggBwEYIAcBGCAHARggBwAAAAZBmsA/wjABGCAHARggBwEYIAcBGCAHARggBwAAAAZBmuA/wjABGCAHARggBwEYIAcBGCAHAAAABkGbAD/CMAEYIAcBGCAHARggBwEYIAcAAAAGQZsgP8IwARggBwEYIAcBGCAHARggBwEYIAcAAAAGQZtAP8IwARggBwEYIAcBGCAHARggBwAAAAZBm2A/wjABGCAHARggBwEYIAcBGCAHAAAABkGbgD/CMAEYIAcBGCAHARggBwEYIAcAAAAGQZugP8IwARggBwEYIAcBGCAHARggBwEYIAcAAAAGQZvAP8IwARggBwEYIAcBGCAHARggBwAAAAZBm+A/wjABGCAHARggBwEYIAcBGCAHAAAABkGaAD/CMAEYIAcBGCAHARggBwEYIAcBGCAHAAAABkGaID/CMAEYIAcBGCAHARggBwEYIAcAAAAGQZpAO8IwARggBwEYIAcBGCAHARggBwAAAAZBmmA3wjABGCAHARggBwEYIAcBGCAH';
+  let wakeLock = null, video = null;
   function setWake(s) {
     const w = $('wake'); w.dataset.s = s;
-    w.querySelector('span').textContent = s === 'on' ? '螢幕常亮' : s === 'unsupported' ? '不支援常亮' : '未常亮';
+    w.querySelector('span').textContent =
+      s === 'on' ? '螢幕常亮' : s === 'video' ? '常亮（備援）' : s === 'unsupported' ? '不支援常亮' : '未常亮';
+  }
+  function playSilentVideo() {
+    try {
+      if (!video) {
+        video = document.createElement('video');
+        video.setAttribute('playsinline', ''); video.setAttribute('webkit-playsinline', '');
+        video.muted = true; video.defaultMuted = true; video.loop = true; video.volume = 0;
+        video.style.cssText = 'position:fixed;left:0;bottom:0;width:1px;height:1px;opacity:.01;pointer-events:none';
+        video.src = 'data:video/mp4;base64,' + SILENT_MP4;
+        video.addEventListener('playing', () => { if (!wakeLock) setWake('video'); });
+        document.body.appendChild(video);
+      }
+      const p = video.play();
+      if (p && p.catch) p.catch(() => { if (!wakeLock) setWake('off'); });
+    } catch (e) { if (!wakeLock) setWake('off'); }
   }
   async function requestWake() {
-    if (!('wakeLock' in navigator)) { setWake('unsupported'); return; }
-    if (wakeLock) return;
-    try {
-      wakeLock = await navigator.wakeLock.request('screen');
-      setWake('on');
-      wakeLock.addEventListener('release', () => { wakeLock = null; setWake('off'); });
-    } catch (e) { setWake('off'); }
+    if (wakeLock) { setWake('on'); return; }
+    if ('wakeLock' in navigator) {
+      try {
+        wakeLock = await navigator.wakeLock.request('screen');
+        setWake('on');
+        wakeLock.addEventListener('release', () => { wakeLock = null; playSilentVideo(); });
+        return;
+      } catch (e) { /* 落到影片備援 */ }
+    }
+    playSilentVideo();
+    if (!video || video.paused) setWake(('wakeLock' in navigator) ? 'off' : 'unsupported');
   }
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') { requestWake(); tick(); }
@@ -599,6 +672,18 @@
     playSfx('start', draft.sound); // 試聽
   });
   $('voice').addEventListener('change', e => { draft.voice = e.target.checked; });
+  $('testVoice').addEventListener('click', () => {
+    const msg = $('voiceMsg');
+    if (!('speechSynthesis' in window)) { msg.textContent = '此瀏覽器不支援語音'; return; }
+    unlockSpeech();
+    msg.textContent = '播放中…';
+    let done = false;
+    speak('Cycle 1 start', r => {
+      done = true;
+      msg.textContent = r === 'ok' ? '語音正常' : '語音失敗（' + r + '）';
+    });
+    setTimeout(() => { if (!done) msg.textContent = '沒有回應，請確認裝置已安裝英語語音且未靜音'; }, 2500);
+  });
   $('countdown').addEventListener('change', e => {
     draft.countdown = e.target.checked;
     if (e.target.checked) playSfx('tick', draft.sound); // 試聽
@@ -620,9 +705,18 @@
     reset();
   });
 
+  $('reload').addEventListener('click', () => {
+    const base = location.href.split('?')[0].split('#')[0];
+    location.replace(base + '?v=' + Date.now()); // 加上參數繞過快取，主畫面模式也有效
+  });
+
   // ---------- 啟動 ----------
+  const standalone = !!(window.navigator.standalone || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
   $('ver').textContent = 'v' + APP_VERSION;
   $('verLine').textContent = '拉筋計時器 版本 v' + APP_VERSION;
+  $('envLine').textContent = '執行模式：' + (standalone ? '主畫面圖示' : '瀏覽器')
+    + '　語音：' + ('speechSynthesis' in window ? '支援' : '不支援')
+    + '　Wake Lock：' + ('wakeLock' in navigator ? '支援' : '不支援');
   reset();
   requestWake();
   setInterval(tick, 100);
