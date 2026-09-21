@@ -2,6 +2,9 @@
 <!--
   拉筋計時器 Stretch Timer
   版本紀錄
+  v1.3.1 (2026-09-21) 修正：提示音消失的問題。移除會搶走 iOS 音訊工作階段的 AudioSession 設定，
+                      語音解鎖/播報結束後自動喚醒 AudioContext，Wake Lock 生效時停掉備援影片，
+                      並在 AudioContext 無法運作時自動改用 WAV 音檔播放提示音；設定頁新增試聽提示音與音訊狀態
   v1.3.0 (2026-09-21) 新增：iOS 主畫面模式支援（manifest、icon、standalone 顯示）；
                       語音失敗時自動改用嗶聲計數輪數；設定頁新增強制重新載入最新版本；
                       嘗試以 AudioSession playback 讓靜音開關下仍可發聲（僅部分 Safari 版本支援）
@@ -19,7 +22,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>拉筋計時器 v1.3.0</title>
+<title>拉筋計時器 v1.3.1</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="icon" href="icon-192.png">
@@ -216,7 +219,9 @@
     <div class="sounds" id="sounds" role="radiogroup"></div>
 
     <div class="row" id="volRow">
-      <label for="vol">提示音量<small><span id="volVal">80</span>%</small></label>
+      <label for="vol">提示音量<small><span id="volVal">80</span>%</small><br>
+        <button type="button" class="mini" id="testSfx">試聽提示音</button><span class="mini-msg" id="sfxMsg"></span>
+      </label>
       <input type="range" class="range" id="vol" min="0" max="100" step="5">
     </div>
 
@@ -249,7 +254,7 @@
 <script>
 (() => {
   'use strict';
-  const APP_VERSION = '1.3.0';
+  const APP_VERSION = '1.3.1';
   const STORE_KEY = 'stretchTimer.settings.v1';
   const DEFAULTS = { prep: 5, cycle: 30, reps: 10, sound: 'beep', voice: true, countdown: true, volume: 0.8 };
   const LIMITS = { prep: [1, 600], cycle: [1, 3600], reps: [0, 99] };
@@ -425,13 +430,51 @@
         ctx = new AC();
         master = ctx.createGain(); master.gain.value = S.volume * 0.9; master.connect(ctx.destination);
       }
-      if (ctx.state === 'suspended') ctx.resume();
-      // Safari 部分版本支援：宣告為 playback，讓 iPhone 側邊靜音開關打開時仍能發聲
-      try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
+      if (ctx.state !== 'running') ctx.resume();
     } catch (e) {}
     unlockSpeech();
   }
   function setMaster(v) { if (master) master.gain.value = v * 0.9; }
+  function resumeAudio() { try { if (ctx && ctx.state !== 'running') ctx.resume(); } catch (e) {} }
+
+  // ---------- 備援：AudioContext 無法運作時改放 WAV 音檔 ----------
+  let usedFallback = false;
+  const wavCache = {};
+  function wavURI(kind) {
+    if (wavCache[kind]) return wavCache[kind];
+    const sr = 22050;
+    const spec = kind === 'start' ? [[0, 0.16, 880], [0.3, 0.16, 880]]
+               : kind === 'tick'  ? [[0, 0.08, 740]]
+               : [[0, 1.1, 660]];
+    const dur = spec[spec.length - 1][0] + spec[spec.length - 1][1] + 0.05;
+    const n = Math.ceil(sr * dur), pcm = new Float32Array(n);
+    for (const [at, len, f] of spec) {
+      const s0 = Math.floor(at * sr), s1 = Math.min(n, s0 + Math.floor(len * sr));
+      for (let i = s0; i < s1; i++) {
+        const t = (i - s0) / sr, k = (i - s0) / (s1 - s0);
+        const env = Math.min(1, k * 40) * Math.min(1, (1 - k) * 40);
+        pcm[i] += Math.sin(2 * Math.PI * f * t) * 0.6 * env;
+      }
+    }
+    const buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+    const str = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+    str(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); str(8, 'WAVE'); str(12, 'fmt ');
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    str(36, 'data'); v.setUint32(40, n * 2, true);
+    for (let i = 0; i < n; i++) v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, pcm[i])) * 32767, true);
+    let bin = ''; const b = new Uint8Array(buf);
+    for (let i = 0; i < b.length; i++) bin += String.fromCharCode(b[i]);
+    return (wavCache[kind] = 'data:audio/wav;base64,' + btoa(bin));
+  }
+  function playWav(kind) {
+    try {
+      const a = new Audio(wavURI(kind === 'one' ? 'tick' : kind));
+      a.volume = Math.max(0, Math.min(1, S.volume));
+      a.play().catch(() => {});
+      usedFallback = true;
+    } catch (e) {}
+  }
   function tone(type, freq, t0, dur, vol, decay) {
     const o = ctx.createOscillator(), g = ctx.createGain();
     o.type = type; o.frequency.value = freq;
@@ -461,7 +504,8 @@
     const id = soundId || S.sound;
     if (id === 'mute' || !PROFILES[id]) return;
     unlockAudio();
-    if (!ctx) return;
+    resumeAudio();
+    if (!ctx || ctx.state !== 'running') { playWav(kind); return; } // AudioContext 被系統中斷時的備援
     const t = ctx.currentTime + 0.03, p = PROFILES[id];
     if (kind === 'start') { p.short(t); p.short(t + 0.3); }
     else if (kind === 'tick') p.tick(t);
@@ -489,7 +533,7 @@
       u.volume = 0; u.rate = 2; u.lang = 'en-US';
       if (enVoice) u.voice = enVoice;
       u.onstart = () => { speechUnlocked = true; };
-      u.onend = () => { speechUnlocked = true; };
+      u.onend = () => { speechUnlocked = true; resumeAudio(); };
       speechSynthesis.speak(u);
     } catch (e) {}
   }
@@ -502,7 +546,8 @@
       u.lang = 'en-US'; u.rate = 1; u.volume = S.volume;
       if (enVoice) u.voice = enVoice;
       u.onstart = () => { speechUnlocked = true; onResult && onResult('ok'); };
-      u.onerror = e => onResult && onResult('error:' + ((e && e.error) || ''));
+      u.onend = () => resumeAudio();   // iOS 語音會接管音訊工作階段，結束後要喚回 AudioContext
+      u.onerror = e => { resumeAudio(); onResult && onResult('error:' + ((e && e.error) || '')); };
       speechSynthesis.speak(u);
     } catch (e) { onResult && onResult('error'); }
   }
@@ -522,8 +567,12 @@
   function beepCount(n) {
     if (beepedFor === n || n > 12 || S.sound === 'mute') return;
     beepedFor = n;
-    unlockAudio();
-    if (!ctx || !PROFILES[S.sound]) return;
+    unlockAudio(); resumeAudio();
+    if (!PROFILES[S.sound]) return;
+    if (!ctx || ctx.state !== 'running') {
+      for (let i = 0; i < n; i++) setTimeout(() => playWav('tick'), i * 260);
+      return;
+    }
     const t0 = ctx.currentTime + 0.05;
     for (let i = 0; i < n; i++) PROFILES[S.sound].tick(t0 + i * 0.26);
   }
@@ -552,11 +601,15 @@
       if (p && p.catch) p.catch(() => { if (!wakeLock) setWake('off'); });
     } catch (e) { if (!wakeLock) setWake('off'); }
   }
+  function stopSilentVideo() {
+    try { if (video && !video.paused) { video.pause(); video.currentTime = 0; } } catch (e) {}
+  }
   async function requestWake() {
     if (wakeLock) { setWake('on'); return; }
     if ('wakeLock' in navigator) {
       try {
         wakeLock = await navigator.wakeLock.request('screen');
+        stopSilentVideo();   // 備援影片會干擾 iOS 音訊，Wake Lock 生效時就停掉
         setWake('on');
         wakeLock.addEventListener('release', () => { wakeLock = null; playSilentVideo(); });
         return;
@@ -566,7 +619,7 @@
     if (!video || video.paused) setWake(('wakeLock' in navigator) ? 'off' : 'unsupported');
   }
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') { requestWake(); tick(); }
+    if (document.visibilityState === 'visible') { requestWake(); resumeAudio(); tick(); }
   });
   $('wake').addEventListener('click', requestWake);
 
@@ -609,6 +662,7 @@
     if (wasRunning) pause();
     draft = { ...S };
     fillSheet();
+    updateEnvLine();
     sheet.classList.add('open'); sheet.setAttribute('aria-hidden', 'false');
   }
   function closeSettings() {
@@ -705,6 +759,14 @@
     reset();
   });
 
+  $('testSfx').addEventListener('click', () => {
+    usedFallback = false;
+    unlockAudio(); setMaster(draft.volume); playSfx('start', draft.sound);
+    setTimeout(() => {
+      $('sfxMsg').textContent = draft.sound === 'mute' ? '目前為靜音'
+        : (ctx && ctx.state === 'running' && !usedFallback) ? '正常（合成音）' : '使用備援音檔';
+    }, 300);
+  });
   $('reload').addEventListener('click', () => {
     const base = location.href.split('?')[0].split('#')[0];
     location.replace(base + '?v=' + Date.now()); // 加上參數繞過快取，主畫面模式也有效
@@ -714,9 +776,13 @@
   const standalone = !!(window.navigator.standalone || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
   $('ver').textContent = 'v' + APP_VERSION;
   $('verLine').textContent = '拉筋計時器 版本 v' + APP_VERSION;
-  $('envLine').textContent = '執行模式：' + (standalone ? '主畫面圖示' : '瀏覽器')
-    + '　語音：' + ('speechSynthesis' in window ? '支援' : '不支援')
-    + '　Wake Lock：' + ('wakeLock' in navigator ? '支援' : '不支援');
+  function updateEnvLine() {
+    $('envLine').textContent = '執行模式：' + (standalone ? '主畫面圖示' : '瀏覽器')
+      + '　音訊：' + (ctx ? ctx.state : '未啟動')
+      + '　常亮：' + ($('wake').dataset.s === 'on' ? 'Wake Lock' : $('wake').dataset.s === 'video' ? '影片備援' : '未啟動')
+      + '　語音：' + ('speechSynthesis' in window ? '支援' : '不支援');
+  }
+  updateEnvLine();
   reset();
   requestWake();
   setInterval(tick, 100);
